@@ -131,12 +131,19 @@ class WebSocketAgentServer:
                             import time
                             start_time = time.time()
                             logger.info(f"[AGENT] Calling agent_service.process_message for session {session_id}")
-                            response = await self.agent_service.process_message(
+                            response_data = await self.agent_service.process_message(
                                 session_id, user_message
                             )
                             elapsed_time = time.time() - start_time
-                            logger.info(f"[AGENT] Agent response received in {elapsed_time:.2f}s, length: {len(response)} chars")
-                            logger.debug(f"[AGENT] Response preview: {response[:200]}...")
+                            
+                            # 响应数据现在是一个字典，包含 content, thoughts, tool_calls
+                            response_content = response_data.get("content", "")
+                            thoughts = response_data.get("thoughts", [])
+                            tool_calls = response_data.get("tool_calls", [])
+                            
+                            logger.info(f"[AGENT] Agent response received in {elapsed_time:.2f}s")
+                            logger.info(f"[AGENT] Content length: {len(response_content)} chars, thoughts: {len(thoughts)}, tool_calls: {len(tool_calls)}")
+                            logger.debug(f"[AGENT] Response preview: {response_content[:200]}...")
                         except Exception as agent_error:
                             logger.error(f"[AGENT] Error processing message: {str(agent_error)}", exc_info=True)
                             await self.send_message(websocket, {
@@ -145,16 +152,16 @@ class WebSocketAgentServer:
                             })
                             continue
                         
-                        # 发送响应
-                        logger.debug(f"[RESPONSE] Sending response to {client_id}, length: {len(response)} chars")
-                        logger.debug(f"[RESPONSE] Response preview (first 100): {response[:100]}...")
-                        logger.debug(f"[RESPONSE] Response preview (last 100): ...{response[-100:]}")
+                        # 发送响应（包含思考过程和工具调用）
+                        logger.debug(f"[RESPONSE] Sending response to {client_id}")
                         await self.send_message(websocket, {
                             "type": "response",
-                            "content": response,
+                            "content": response_content,
+                            "thoughts": thoughts,
+                            "tool_calls": tool_calls,
                             "session_id": session_id
                         })
-                        logger.info(f"[RESPONSE] Response sent successfully to {client_id}, full length: {len(response)} chars")
+                        logger.info(f"[RESPONSE] Response sent successfully to {client_id}")
                     
                     elif msg_type == "clear_history":
                         # 清除历史记录
