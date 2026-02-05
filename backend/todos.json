@@ -1,0 +1,44 @@
+{
+  "user-session": [
+    {
+      "id": "ba-1",
+      "content": "【上午】需求调研与用户访谈：准备问题清单、进行访谈或调研、记录关键信息",
+      "status": "pending",
+      "priority": "high",
+      "created_at": "2026-02-05 23:05:21",
+      "updated_at": "2026-02-05 23:05:21"
+    },
+    {
+      "id": "ba-2",
+      "content": "【上午】整理调研笔记：提炼需求要点、识别业务痛点",
+      "status": "pending",
+      "priority": "high",
+      "created_at": "2026-02-05 23:05:21",
+      "updated_at": "2026-02-05 23:05:21"
+    },
+    {
+      "id": "ba-3",
+      "content": "【下午】流程梳理：绘制当前业务流程图（As-Is）和优化后流程图（To-Be）",
+      "status": "pending",
+      "priority": "high",
+      "created_at": "2026-02-05 23:05:21",
+      "updated_at": "2026-02-05 23:05:21"
+    },
+    {
+      "id": "ba-4",
+      "content": "【下午】PRD/BRD文档撰写：编写需求背景、功能描述、验收标准",
+      "status": "pending",
+      "priority": "high",
+      "created_at": "2026-02-05 23:05:21",
+      "updated_at": "2026-02-05 23:05:21"
+    },
+    {
+      "id": "ba-5",
+      "content": "【下午】文档自检与优化：检查完整性、逻辑通顺度、术语统一性",
+      "status": "pending",
+      "priority": "medium",
+      "created_at": "2026-02-05 23:05:21",
+      "updated_at": "2026-02-05 23:05:21"
+    }
+  ]
+}

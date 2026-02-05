@@ -1,0 +1,50 @@
+[
+  {
+    "id": "b2b9b0e4",
+    "title": "[测试] 立即触发系统通知",
+    "datetime": "2026-02-05 23:10",
+    "description": "这是一个用于测试 macOS/Windows 系统通知的日程。",
+    "reminder_minutes": 1,
+    "repeat": "once",
+    "created_at": "2026-02-05 23:09:33",
+    "status": "active",
+    "notified": true,
+    "notified_at": "2026-02-05 23:09:57"
+  },
+  {
+    "id": "aed5f9bf",
+    "title": "[再次测试] macOS 通知",
+    "datetime": "2026-02-05 23:16",
+    "description": "用于二次验证 macOS AppleScript 通知是否弹出。",
+    "reminder_minutes": 1,
+    "repeat": "once",
+    "created_at": "2026-02-05 23:14:50",
+    "status": "active",
+    "notified": true,
+    "notified_at": "2026-02-05 23:15:08"
+  },
+  {
+    "id": "3f24ec3c",
+    "title": "[测试] 同步到系统日历",
+    "datetime": "2026-02-05 23:25",
+    "description": "由 create_schedule 自动创建，并尝试同步到系统日历 (Calendar.app)。",
+    "reminder_minutes": 10,
+    "repeat": "once",
+    "created_at": "2026-02-05 23:18:17",
+    "status": "active",
+    "notified": true,
+    "notified_at": "2026-02-05 23:18:27"
+  },
+  {
+    "id": "79e415d3",
+    "title": "睡觉",
+    "datetime": "2026-02-05 23:30",
+    "description": "Table Copilot 自动创建的睡觉提醒日程，会尝试写入系统日历。",
+    "reminder_minutes": 0,
+    "repeat": "once",
+    "created_at": "2026-02-05 23:23:17",
+    "status": "active",
+    "notified": true,
+    "notified_at": "2026-02-05 23:30:06"
+  }
+]

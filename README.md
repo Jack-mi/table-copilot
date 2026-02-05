@@ -41,7 +41,20 @@
 
 ## 快速开始
 
-### 1. 安装依赖
+### 1. 一键快速部署（推荐）
+
+```bash
+cd table-copilot
+
+# 第一次运行或环境变化时执行（会自动创建 venv 并安装依赖）
+chmod +x scripts/quick_start_server.sh
+scripts/quick_start_server.sh
+```
+
+> 提示：脚本默认使用 `python3.12` 创建虚拟环境，如需自定义，可设置环境变量 `PYTHON_BIN`，例如：
+> `PYTHON_BIN=python3.12 ./quick_start_server.sh`
+
+### 2. 手动安装依赖（可选）
 
 ```bash
 # 创建虚拟环境
@@ -52,26 +65,51 @@ source venv/bin/activate  # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-### 2. 配置环境变量（可选）
+### 3. 配置环境变量（必选）
 
-代码中已内置 OpenRouter API key，默认使用 `moonshotai/kimi-k2.5` 模型。
+推荐两种方式二选一：
 
-如需自定义，可设置环境变量：
+- **方式 A：使用 OpenRouter + Kimi（推荐）**
+  
 ```bash
-export OPENROUTER_API_KEY=your_api_key
-export MODEL_NAME=moonshotai/kimi-k2.5
+export OPENROUTER_API_KEY=your_openrouter_key
+export MODEL_NAME=moonshotai/kimi-k2.5        # 可选，默认即为该模型
+export OPENROUTER_BASE_URL=https://openrouter.ai/api/v1  # 可选
 ```
 
-### 3. 启动服务
+- **方式 B：直接使用 OpenAI 官方接口**
 
-#### 方式一：使用启动脚本（推荐）
+```bash
+export OPENAI_API_KEY=your_openai_key         # 或使用 OPENAI_KEY
+export MODEL_NAME=gpt-4.1-mini                # 可选，覆盖默认模型
+export OPENAI_BASE_URL=https://api.openai.com/v1  # 可选
+```
+
+> 也可以在项目根目录创建 `.env` 文件，内容示例：
+>
+> ```bash
+> OPENROUTER_API_KEY=your_openrouter_key
+> MODEL_NAME=moonshotai/kimi-k2.5
+> ```
+
+> 或使用 OpenAI：
+>
+> ```bash
+> OPENAI_API_KEY=your_openai_key
+> MODEL_NAME=gpt-4.1-mini
+> ```
+```
+
+### 4. 启动服务
+
+#### 方式一：使用启动脚本（推荐，配合一键脚本）
 
 ```bash
 # 启动 WebSocket 服务器
-./start_all.sh
+scripts/start_all.sh
 
 # 启动前端客户端服务器（新终端）
-./start_client.sh
+scripts/start_client.sh
 ```
 
 #### 方式二：手动启动
@@ -79,7 +117,7 @@ export MODEL_NAME=moonshotai/kimi-k2.5
 ```bash
 # 启动 WebSocket 服务器
 source venv/bin/activate
-python3 websocket_server.py
+python3 -m backend.websocket_server
 
 # 启动前端服务器（新终端）
 python3 -m http.server 3000
@@ -95,7 +133,7 @@ python3 -m http.server 3000
 
 ```bash
 # 检查服务器进程和端口
-./check_server_status.sh
+scripts/check_server_status.sh
 ```
 
 ### 2. 使用前端界面测试
@@ -111,10 +149,10 @@ python3 -m http.server 3000
 ```bash
 # Python 测试脚本
 source venv/bin/activate
-python3 quick_test.py
+python3 tests/quick_test.py
 ```
 
-### 4. 使用 curl 测试（参考 CURL_TEST.md）
+### 4. 使用 WebSocket 命令行工具测试（参考 docs/CURL_TEST.md）
 
 ```bash
 # 需要安装 websocat
@@ -125,16 +163,39 @@ websocat ws://localhost:8765
 
 ```
 table-copilot/
-├── agent_service.py          # AutoGen 多 Agent 服务核心
-├── websocket_server.py       # WebSocket 服务器
-├── client.html               # 前端聊天界面
-├── quick_test.py             # 快速测试脚本
-├── test_client.py            # 测试客户端
-├── start_all.sh              # 启动服务器脚本
-├── start_client.sh           # 启动前端脚本
-├── check_server_status.sh    # 服务器状态检查
+├── backend/                  # 后端代码与工具
+│   ├── __init__.py
+│   ├── agent_service.py      # 多 Agent 服务核心（含工具注册）
+│   ├── websocket_server.py   # WebSocket 服务器入口
+│   ├── check_server.py       # 服务器健康检查脚本（Python）
+│   ├── schedules.json        # 日程数据存储
+│   ├── config/
+│   │   └── system_prompt.txt # 系统提示词配置
+│   └── tools/                # 可调用工具集合
+│       ├── __init__.py
+│       ├── schedule_reminder.py
+│       ├── todo_manager.py
+│       └── ask_user_question.py
+├── frontend/                 # 前端界面
+│   ├── client.html           # Web 聊天界面
+│   └── README_CLIENT.md      # 前端使用说明
+├── scripts/                  # 启动与运维脚本
+│   ├── start_all.sh          # 启动后端（含端口清理与日志）
+│   ├── start_server.sh       # 仅启动后端 WebSocket 服务器
+│   ├── start_client.sh       # 启动静态前端 HTTP 服务
+│   ├── quick_start_server.sh # 一键创建 venv + 安装依赖 + 启动后端
+│   ├── check_server_status.sh# 检查端口与连接状态
+│   └── test_curl.sh          # 命令行 WebSocket 测试入口说明
+├── tests/                    # 测试脚本
+│   ├── quick_test.py         # 快速单轮对话测试
+│   └── test_client.py        # 多轮对话与清理测试客户端
+├── docs/                     # 文档与说明
+│   ├── CURL_TEST.md
+│   ├── LOG_LEVELS.md
+│   ├── STATUS.md
+│   └── TODO_IMPLEMENTATION_PLAN.md
 ├── requirements.txt          # Python 依赖
-└── README.md                 # 项目说明
+└── README.md                 # 项目说明（本文件）
 ```
 
 ## WebSocket 消息格式
