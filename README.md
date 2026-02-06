@@ -67,22 +67,12 @@ pip install -r requirements.txt
 
 ### 3. 配置环境变量（必选）
 
-推荐两种方式二选一：
+服务统一通过 OpenRouter 请求模型，不再直接调用 OpenAI 接口。需设置：
 
-- **方式 A：使用 OpenRouter + Kimi（推荐）**
-  
 ```bash
-export OPENROUTER_API_KEY=your_openrouter_key
-export MODEL_NAME=moonshotai/kimi-k2.5        # 可选，默认即为该模型
+export OPENROUTER_API_KEY=your_openrouter_key   # 以 sk-or- 开头
+export MODEL_NAME=moonshotai/kimi-k2.5          # 可选，默认 Kimi
 export OPENROUTER_BASE_URL=https://openrouter.ai/api/v1  # 可选
-```
-
-- **方式 B：直接使用 OpenAI 官方接口**
-
-```bash
-export OPENAI_API_KEY=your_openai_key         # 或使用 OPENAI_KEY
-export MODEL_NAME=gpt-4.1-mini                # 可选，覆盖默认模型
-export OPENAI_BASE_URL=https://api.openai.com/v1  # 可选
 ```
 
 > 也可以在项目根目录创建 `.env` 文件，内容示例：
@@ -92,13 +82,6 @@ export OPENAI_BASE_URL=https://api.openai.com/v1  # 可选
 > MODEL_NAME=moonshotai/kimi-k2.5
 > ```
 
-> 或使用 OpenAI：
->
-> ```bash
-> OPENAI_API_KEY=your_openai_key
-> MODEL_NAME=gpt-4.1-mini
-> ```
-```
 
 ### 4. 启动服务
 

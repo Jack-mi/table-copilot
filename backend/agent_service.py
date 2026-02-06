@@ -108,49 +108,20 @@ class MultiAgentService:
     
     def __init__(self):
         """初始化服务，创建 agent 和运行时"""
-        # 模型 / API 配置：同时兼容 OpenRouter 和 OpenAI
+        # 模型 / API 配置：统一走 OpenRouter，不再直接请求 OpenAI
         openrouter_key = os.getenv("OPENROUTER_API_KEY")
-        # 很多人会把各种 key 都塞在 OPENAI_KEY，这里做兜底兼容
-        raw_openai_key = os.getenv("OPENAI_API_KEY") or os.getenv("OPENAI_KEY")
-        provider_env = os.getenv("AUTOGEN_PROVIDER", "").lower().strip()
-
-        # 简单的 key 形态识别：
-        # - OpenRouter 常见前缀：sk-or-
-        # - OpenAI Project key：sk-proj-
-        key_looks_openrouter = bool(raw_openai_key and raw_openai_key.startswith("sk-or-"))
-        key_looks_openai = bool(raw_openai_key and raw_openai_key.startswith("sk-proj-"))
-
-        # 显式指定优先级：AUTOGEN_PROVIDER=openai / openrouter
-        if provider_env == "openai" and raw_openai_key:
-            self.provider = "openai"
-            self.api_key = raw_openai_key
-            self.model_name = os.getenv("MODEL_NAME", "gpt-4.1-mini")
-            base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
-        elif provider_env == "openrouter" and (openrouter_key or raw_openai_key):
-            self.provider = "openrouter"
-            self.api_key = openrouter_key or raw_openai_key
-            self.model_name = os.getenv("MODEL_NAME", "moonshotai/kimi-k2.5")
-            base_url = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
-        elif openrouter_key:
-            # 显式配置了 OPENROUTER_API_KEY，就走 OpenRouter
-            self.provider = "openrouter"
+        fallback_key = os.getenv("OPENAI_API_KEY") or os.getenv("OPENAI_KEY")
+        # 兜底：若 fallback_key 以 sk-or- 开头，视为 OpenRouter key
+        if openrouter_key:
             self.api_key = openrouter_key
-            self.model_name = os.getenv("MODEL_NAME", "moonshotai/kimi-k2.5")
-            base_url = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
-        elif raw_openai_key and key_looks_openrouter:
-            # 只有 OPENAI_KEY 但看起来是 OpenRouter 的 key（sk-or-）
-            self.provider = "openrouter"
-            self.api_key = raw_openai_key
-            self.model_name = os.getenv("MODEL_NAME", "moonshotai/kimi-k2.5")
-            base_url = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
-        elif raw_openai_key:
-            # 剩下的情况（例如 sk-proj-），一律当成 OpenAI 官方 key
-            self.provider = "openai"
-            self.api_key = raw_openai_key
-            self.model_name = os.getenv("MODEL_NAME", "gpt-4.1-mini")
-            base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+        elif fallback_key and fallback_key.startswith("sk-or-"):
+            self.api_key = fallback_key
         else:
-            raise ValueError("请设置 OPENROUTER_API_KEY（推荐）或 OPENAI_API_KEY / OPENAI_KEY 环境变量")
+            raise ValueError("请设置 OPENROUTER_API_KEY 环境变量（OpenRouter 的 key 以 sk-or- 开头）")
+
+        self.provider = "openrouter"
+        self.model_name = os.getenv("MODEL_NAME", "moonshotai/kimi-k2.5")
+        base_url = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
         
         logger.info(f"Using provider: {self.provider}")
         logger.info(f"Using model: {self.model_name}")
@@ -213,7 +184,10 @@ class MultiAgentService:
                 name="assistant",
                 model_client=self.model_client,
                 system_message=self._build_system_prompt(),
-                tools=agent_tools,  # 添加日程提醒工具
+                tools=agent_tools,
+                # ReAct 循环：持续执行 tool 直到模型返回文本（无 tool 调用）为止
+                max_tool_iterations=10,      # 最多 10 轮 tool 调用，达到后强制进入 reflect
+                reflect_on_tool_use=True,    # 工具调用后做一次推理，生成最终自然语言回复
             )
             logger.debug(f"[AGENT] Agent created successfully for session {session_id}")
             logger.debug(f"[AGENT] Total active sessions: {len(self.session_agents)}")

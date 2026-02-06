@@ -756,11 +756,22 @@
                     // 保持原样
                 }
                 
-                // 格式化结果
+                // 格式化结果：优先展示 JSON 中的 message/content，而不是原始 JSON
                 let resultHtml = '';
                 if (tc.result !== undefined) {
+                    let displayResult = typeof tc.result === 'string' ? tc.result : String(tc.result);
+                    try {
+                        const parsed = JSON.parse(displayResult);
+                        if (parsed && typeof parsed === 'object') {
+                            if (typeof parsed.message === 'string' && parsed.message.trim()) {
+                                displayResult = parsed.message;
+                            } else if (typeof parsed.content === 'string' && parsed.content.trim()) {
+                                displayResult = parsed.content;
+                            }
+                        }
+                    } catch (_) { /* 非 JSON，保持原样 */ }
                     const resultClass = tc.is_error ? 'error' : '';
-                    resultHtml = `<div class="tool-result ${resultClass}">${escapeHtml(tc.result)}</div>`;
+                    resultHtml = `<div class="tool-result ${resultClass}">${escapeHtml(displayResult)}</div>`;
                 }
                 
                 return `
@@ -891,6 +902,8 @@
                             case 'response':
                                 isProcessing = false;
                                 updateSendButton(false);
+                                // 打印完整的模型 response 到 console
+                                console.log('[Model Response] 完整响应:', data);
                                 // 传递思考过程和工具调用
                                 addMessage(
                                     data.content,

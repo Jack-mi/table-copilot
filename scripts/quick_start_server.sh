@@ -34,12 +34,12 @@ pip install --upgrade pip >/dev/null
 pip install -r requirements.txt -i https://pypi.org/simple/
 
 echo "🔑 检查 API Key..."
-if [ -z "${OPENROUTER_API_KEY}" ] && [ -z "${OPENAI_API_KEY}" ] && [ -z "${OPENAI_KEY}" ]; then
+if [ -z "${OPENROUTER_API_KEY}" ]; then
   if [ -f ".env" ]; then
-    echo "ℹ️ 未在当前 shell 检测到 API Key，但检测到 .env 文件，服务启动时将通过 python-dotenv 加载。"
+    echo "ℹ️ 未在当前 shell 检测到 OPENROUTER_API_KEY，但检测到 .env 文件，服务启动时将通过 python-dotenv 加载。"
   else
-    echo "❌ 未检测到 OPENROUTER_API_KEY / OPENAI_API_KEY / OPENAI_KEY，且不存在 .env 文件"
-    echo "   请按 README.md 中示例在当前终端设置环境变量，或在项目根目录创建 .env 文件。"
+    echo "❌ 未检测到 OPENROUTER_API_KEY，且不存在 .env 文件"
+    echo "   请设置 OPENROUTER_API_KEY（OpenRouter key 以 sk-or- 开头），或在项目根目录创建 .env 文件。"
     exit 1
   fi
 fi
