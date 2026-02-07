@@ -11,6 +11,44 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
     <!-- 初始化 marked 配置（在库加载后执行） -->
     <script>
+        // 用于流式展示 assistant 的临时状态（思考/工具调用 + 正文）
+        let streamingResponseDiv = null;
+        let streamingResponseText = '';
+        let streamingFlushScheduled = false;
+        let streamingMessagesDiv = null;
+        let streamingStatusDiv = null;  // 思考 / tool_call 过程同步展示在此
+
+        function ensureStreamingMessage() {
+            const messagesDiv = document.getElementById('messages');
+            if (streamingResponseDiv && streamingStatusDiv) return messagesDiv;
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'message assistant';
+            const contentDiv = document.createElement('div');
+            contentDiv.className = 'message-content';
+            const statusDiv = document.createElement('div');
+            statusDiv.className = 'streaming-status';
+            statusDiv.setAttribute('aria-label', 'stream-status');
+            statusDiv.style.cssText = 'font-size:13px;color:#666;margin-bottom:8px;line-height:1.6;';
+            const textDiv = document.createElement('div');
+            contentDiv.appendChild(statusDiv);
+            contentDiv.appendChild(textDiv);
+            messageDiv.appendChild(contentDiv);
+            messagesDiv.appendChild(messageDiv);
+            streamingStatusDiv = statusDiv;
+            streamingResponseDiv = textDiv;
+            streamingResponseText = '';
+            streamingMessagesDiv = messagesDiv;
+            return messagesDiv;
+        }
+
+        function appendStreamStatusLine(text) {
+            if (!streamingStatusDiv) return;
+            var line = document.createElement('div');
+            line.className = 'stream-status-line';
+            line.textContent = text;
+            streamingStatusDiv.appendChild(line);
+            if (streamingMessagesDiv) streamingMessagesDiv.scrollTop = streamingMessagesDiv.scrollHeight;
+        }
         // 等待库加载完成
         window.addEventListener('DOMContentLoaded', function() {
             // 检查 marked 是否加载
@@ -283,6 +321,11 @@
             font-size: 12px;
         }
 
+        /* 流式状态区域：无内容时不占位（仅展示最终回复时不追加思考/工具调用行） */
+        .streaming-status:empty {
+            display: none;
+        }
+
         /* 思考过程样式 */
         .thought-section {
             background: linear-gradient(135deg, #f5f3ff 0%, #ede9fe 100%);
@@ -548,9 +591,37 @@
         .clear-btn:hover {
             background: #ff5252;
         }
+
+        /* 前端提示 Toast（如 create_schedule 成功后的鼓励文案） */
+        #toastContainer {
+            position: fixed;
+            bottom: 24px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 9999;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            pointer-events: none;
+        }
+        .toast {
+            padding: 12px 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border-radius: 12px;
+            font-size: 14px;
+            font-weight: 500;
+            box-shadow: 0 4px 20px rgba(102, 126, 234, 0.4);
+            animation: toastIn 0.3s ease;
+        }
+        @keyframes toastIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
     </style>
 </head>
 <body>
+    <div id="toastContainer"></div>
     <div class="container">
         <div class="header">
             <h1>🤖 AutoGen 对话助手</h1>
@@ -591,6 +662,20 @@
         let isManualClose = false;
         let reconnectTimer = null;
         
+        /** 统一打印流式 chunk，格式：[chunk] type=xxx | key=value | ... */
+        function logChunk(type, attrs) {
+            var parts = ['[chunk] type=' + type];
+            if (attrs && typeof attrs === 'object') {
+                Object.keys(attrs).forEach(function(k) {
+                    var v = attrs[k];
+                    if (v === undefined || v === null) return;
+                    if (typeof v === 'string' && v.length > 60) v = v.substring(0, 60) + '…';
+                    parts.push(k + '=' + (typeof v === 'string' ? JSON.stringify(v) : v));
+                });
+            }
+            console.log(parts.join(' | '));
+        }
+
         // 日志函数 - 保留基础调试信息
         function log(level, message, data = null) {
             if (level === 'ERROR') {
@@ -825,6 +910,20 @@
             addMessage(content, 'system');
         }
 
+        /** 前端提示 Toast：显示 create_schedule 等工具返回的 frontend_prompt */
+        function showToast(message) {
+            if (!message || typeof message !== 'string') return;
+            const container = document.getElementById('toastContainer');
+            if (!container) return;
+            const el = document.createElement('div');
+            el.className = 'toast';
+            el.textContent = message;
+            container.appendChild(el);
+            setTimeout(function() {
+                if (el.parentNode) el.parentNode.removeChild(el);
+            }, 3500);
+        }
+
         function connect() {
             // 如果已经有连接，先关闭
             if (ws && ws.readyState !== WebSocket.CLOSED) {
@@ -884,10 +983,12 @@
                 };
 
                 ws.onmessage = (event) => {
-                    log('DEBUG', '收到原始消息', { raw: event.data });
                     try {
                         const data = JSON.parse(event.data);
-                        log('INFO', '收到消息', { type: data.type });
+                        // 非 stream 类型才打通用日志，stream 在各自 case 里只打印关键内容，避免 console 展开整对象和 [[Prototype]]
+                        if (data.type !== 'response_stream' && data.type !== 'thought' && data.type !== 'tool_call') {
+                            log('INFO', '收到消息', data.type);
+                        }
 
                         switch (data.type) {
                             case 'connection':
@@ -902,14 +1003,36 @@
                             case 'response':
                                 isProcessing = false;
                                 updateSendButton(false);
-                                // 打印完整的模型 response 到 console
-                                console.log('[Model Response] 完整响应:', data);
-                                // 传递思考过程和工具调用
+                                logChunk('response', {
+                                    content_length: (data.content || '').length,
+                                    thoughts: (data.thoughts || []).length,
+                                    tool_calls: (data.tool_calls || []).length
+                                });
+                                // 若 create_schedule 等工具返回了 frontend_prompt，则弹出前端提示
+                                (data.tool_calls || []).forEach(function(tc) {
+                                    if (!tc.result) return;
+                                    try {
+                                        const parsed = typeof tc.result === 'string' ? JSON.parse(tc.result) : tc.result;
+                                        if (parsed && parsed.success && parsed.frontend_prompt) {
+                                            showToast(parsed.frontend_prompt);
+                                        }
+                                    } catch (_) {}
+                                });
+                                // 如果之前已经用流式方式展示了思考/工具调用/正文，先移除那条临时消息
+                                if (streamingResponseDiv && streamingResponseDiv.parentNode) {
+                                    const contentDiv = streamingResponseDiv.parentNode;
+                                    const msgDiv = contentDiv && contentDiv.parentNode ? contentDiv.parentNode : null;
+                                    if (msgDiv && msgDiv.parentNode) msgDiv.parentNode.removeChild(msgDiv);
+                                    streamingResponseDiv = null;
+                                    streamingStatusDiv = null;
+                                    streamingResponseText = '';
+                                }
+                                // 只展示最终回复，不展示思考过程和工具调用
                                 addMessage(
                                     data.content,
                                     'assistant',
-                                    data.thoughts || [],
-                                    data.tool_calls || []
+                                    [],
+                                    []
                                 );
                                 break;
                             case 'error':
@@ -920,6 +1043,56 @@
                                 break;
                             case 'pong':
                                 // 心跳响应
+                                break;
+                            case 'response_stream':
+                                // 答案正文流式增量返回：每收到一个 chunk 累积后，在下一帧再写 DOM，保证浏览器有机会逐段重绘
+                                {
+                                    const chunk = (data.delta !== undefined ? data.delta : data.content) || '';
+                                    if (chunk) {
+                                        logChunk('response_stream', {
+                                            chunk_type: data.chunk_type || '',
+                                            length: chunk.length,
+                                            delta: chunk
+                                        });
+                                    }
+                                    ensureStreamingMessage();
+                                    streamingResponseText += chunk;
+                                    if (!streamingFlushScheduled) {
+                                        streamingFlushScheduled = true;
+                                        requestAnimationFrame(function flushStream() {
+                                            streamingFlushScheduled = false;
+                                            if (streamingResponseDiv) {
+                                                streamingResponseDiv.textContent = streamingResponseText;
+                                                if (streamingMessagesDiv) {
+                                                    streamingMessagesDiv.scrollTop = streamingMessagesDiv.scrollHeight;
+                                                }
+                                            }
+                                        });
+                                    }
+                                }
+                                break;
+                            case 'thought':
+                                if (data.thought && data.thought.content) {
+                                    var t = data.thought.content;
+                                    logChunk('thought', {
+                                        chunk_type: data.chunk_type || '',
+                                        preview: t.length > 60 ? t.substring(0, 60) + '…' : t
+                                    });
+                                    ensureStreamingMessage();
+                                    // 不展示思考过程，仅控制台记录
+                                }
+                                break;
+                            case 'tool_call':
+                                var tc = data.tool_call;
+                                var name = tc && tc.name ? tc.name : '';
+                                var phase = data.phase || '';
+                                logChunk('tool_call', {
+                                    chunk_type: data.chunk_type || '',
+                                    phase: phase,
+                                    name: name
+                                });
+                                ensureStreamingMessage();
+                                // 不展示工具调用过程，仅控制台记录
                                 break;
                             default:
                                 log('WARN', '未知消息类型', { type: data.type, payload: data });

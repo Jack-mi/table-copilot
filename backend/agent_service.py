@@ -6,7 +6,7 @@ import asyncio
 import json
 import logging
 from datetime import datetime
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Callable, Awaitable, Any
 from autogen_agentchat.agents import AssistantAgent
 from autogen_ext.models.openai import OpenAIChatCompletionClient
 import os
@@ -36,6 +36,28 @@ logging.basicConfig(
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 logger = logging.getLogger(__name__)
+
+# run_stream 流式事件与 chunk 分类（chunk_type）对应关系：
+# - llm: 模型思考/推理/正文（ThoughtEvent、message.thought、ModelClientStreamingChunkEvent、TextMessage）
+# - tool: 工具调用请求或结果（ToolCallRequestEvent、ToolCallExecutionEvent、ToolCallSummaryMessage）
+# 前端可根据 chunk_type 做筛选、样式或日志区分。
+#
+# ReAct / reflect_on_tool_use 说明（AutoGen AssistantAgent）：
+# - 每轮 ReAct：LLM 可能返回思考/正文或 tool_calls；工具执行后会把结果加入上下文并再次调用 LLM。
+# - 设计上「结束节点」应为模型的总结回复（对工具结果的总结），不是工具调用本身。
+# - 若 reflect_on_tool_use=True，工具循环结束后会再做一次模型推理（tool_choice="none"），
+#   并 yield Response(chat_message=TextMessage(...))，BaseChatAgent.run_stream 会将其拆成
+#   yield chat_message 再 yield TaskResult，故我们能在 messages 里拿到该 TextMessage。
+# - 若 reflect_on_tool_use=False，则用 _summarize_tool_use 生成 ToolCallSummaryMessage 作为结束。
+# - 未拿到最终模型回复的常见原因：(1) reflect 推理抛错（如 "Reflect on tool use produced no valid
+#   text response"）；(2) 提取逻辑只认 source='assistant' 而 agent name 不同；(3) 流中最后一条
+#   被误判。此处用多种回退方式提取，并在无任何正文时用工具成功 message 拼一段摘要。
+def _stream_chunk_type(msg_type: str) -> str:
+    if msg_type in ("ThoughtEvent", "ModelClientStreamingChunkEvent", "TextMessage"):
+        return "llm"
+    if msg_type in ("ToolCallRequestEvent", "ToolCallExecutionEvent", "ToolCallSummaryMessage"):
+        return "tool"
+    return "other"
 
 # 为 HTTP 请求设置日志级别（减少噪音）
 logging.getLogger('httpx').setLevel(logging.WARNING)
@@ -180,14 +202,14 @@ class MultiAgentService:
                 agent_tools.append(ask_user_question)
                 logger.info("[AGENT] Using raw ask_user_question function as tool")
             
+            # 每轮对话使用 ReAct loop：模型可多次调用 tool，直到本轮不再发起 tool 才结束并返回最终回复
             self.session_agents[session_id] = AssistantAgent(
                 name="assistant",
                 model_client=self.model_client,
                 system_message=self._build_system_prompt(),
                 tools=agent_tools,
-                # ReAct 循环：持续执行 tool 直到模型返回文本（无 tool 调用）为止
-                max_tool_iterations=10,      # 最多 10 轮 tool 调用，达到后强制进入 reflect
-                reflect_on_tool_use=True,    # 工具调用后做一次推理，生成最终自然语言回复
+                max_tool_iterations=10,      # 单轮内最多 10 次 tool 调用，防止死循环
+                reflect_on_tool_use=True,    # 每次 tool 结果后让模型再推理，决定继续 call tool 或产出最终文本
             )
             logger.debug(f"[AGENT] Agent created successfully for session {session_id}")
             logger.debug(f"[AGENT] Total active sessions: {len(self.session_agents)}")
@@ -201,19 +223,27 @@ class MultiAgentService:
             self.conversation_history[session_id] = []
         return self.conversation_history[session_id]
     
-    async def process_message(self, session_id: str, user_message: str) -> Dict:
+    async def process_message(
+        self,
+        session_id: str,
+        user_message: str,
+        stream_callback: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
+    ) -> Dict:
         """
-        处理用户消息并返回 agent 响应
+        处理用户消息并返回 agent 响应。
+        
+        语义约定（与具体是否用 Kimi 等模型无关）：
+        - 每轮中可能有多轮「模型 → 调用 tool → 执行 → 回填」的循环，但**结束节点一定是大模型对 tool 的总结回复**，而不是工具调用本身。
+        - 即：工具调用是中间步骤，最终展示给用户的 content 必须是模型的那段总结性文本。
+        - 该约定由 ReAct/框架保证（如 reflect_on_tool_use）；此处从 stream 中提取的即是这段「最终模型回复」。
         
         Args:
             session_id: 会话 ID，用于维护多轮对话
             user_message: 用户消息
+            stream_callback: 可选，流式事件回调（thought/tool_call/llm_chunk），事件中带 chunk_type（llm/tool）
             
         Returns:
-            包含响应信息的字典，包括：
-            - content: 最终响应文本
-            - thoughts: 思考过程列表
-            - tool_calls: 工具调用列表
+            包含 content、thoughts、tool_calls 的字典
         """
         import time
         start_time = time.time()
@@ -235,11 +265,11 @@ class MultiAgentService:
             history = self.get_or_create_history(session_id)
             logger.debug(f"[SESSION] Session {session_id} has {len(history)} history entries")
             
-            # 使用 agent 处理消息
-            # 收集所有消息
+            # 本轮的 ReAct loop 由 AutoGen 在 agent.run_stream 内部实现：
+            # 循环：模型输出 → 若含 tool_calls 则执行并回写结果 → 模型再推理 → 直到本轮无 tool 调用则 break，得到最终文本
             messages = []
             message_count = 0
-            logger.info(f"[AGENT] Starting agent.run_stream for session {session_id}")
+            logger.info(f"[AGENT] Starting agent.run_stream (ReAct loop) for session {session_id}")
             
             try:
                 async for message in agent.run_stream(task=user_message):
@@ -248,14 +278,42 @@ class MultiAgentService:
                     msg_type = type(message).__name__
                     logger.info(f"[STREAM] Received message #{message_count}: {msg_type}")
                     
-                    # 提取思考过程 (ThoughtEvent)
+                    # 提取思考过程（AutoGen 官方类型：autogen_agentchat.messages.ThoughtEvent）
                     if msg_type == "ThoughtEvent":
                         if hasattr(message, 'content') and message.content:
-                            result["thoughts"].append({
+                            thought_item = {
                                 "content": message.content,
                                 "source": getattr(message, 'source', 'assistant')
-                            })
+                            }
+                            result["thoughts"].append(thought_item)
                             logger.info(f"[THOUGHT] Captured ThoughtEvent: {message.content[:100]}...")
+                            # 流式回传思考过程（分类为 llm）
+                            if stream_callback is not None:
+                                try:
+                                    await stream_callback(
+                                        {
+                                            "type": "thought",
+                                            "chunk_type": "llm",
+                                            "thought": thought_item,
+                                        }
+                                    )
+                                except Exception as cb_err:
+                                    logger.warning(f"[STREAM_CALLBACK] Error sending thought event: {cb_err}")
+                    
+                    # LLM 逐 token 流式输出（若模型客户端支持）
+                    elif msg_type == "ModelClientStreamingChunkEvent":
+                        chunk_content = getattr(message, "content", None) or getattr(message, "chunk", None) or getattr(message, "delta", "")
+                        if chunk_content and stream_callback is not None:
+                            try:
+                                await stream_callback(
+                                    {
+                                        "type": "llm_chunk",
+                                        "chunk_type": "llm",
+                                        "delta": chunk_content if isinstance(chunk_content, str) else str(chunk_content),
+                                    }
+                                )
+                            except Exception as cb_err:
+                                logger.warning(f"[STREAM_CALLBACK] Error sending llm_chunk: {cb_err}")
                     
                     # 提取工具调用请求 (ToolCallRequestEvent)
                     elif msg_type == "ToolCallRequestEvent":
@@ -269,6 +327,19 @@ class MultiAgentService:
                                 }
                                 result["tool_calls"].append(tool_call)
                                 logger.info(f"[TOOL_CALL] Tool request: {tool_call['name']}({tool_call['arguments'][:50]}...)")
+                                # 流式回传工具调用请求（分类为 tool）
+                                if stream_callback is not None:
+                                    try:
+                                        await stream_callback(
+                                            {
+                                                "type": "tool_call",
+                                                "chunk_type": "tool",
+                                                "phase": "request",
+                                                "tool_call": tool_call,
+                                            }
+                                        )
+                                    except Exception as cb_err:
+                                        logger.warning(f"[STREAM_CALLBACK] Error sending tool call request: {cb_err}")
                     
                     # 提取工具调用结果 (ToolCallExecutionEvent)
                     elif msg_type == "ToolCallExecutionEvent":
@@ -282,6 +353,19 @@ class MultiAgentService:
                                         tc["is_error"] = getattr(exec_result, 'is_error', False)
                                         tc["status"] = "error" if tc["is_error"] else "completed"
                                         logger.info(f"[TOOL_RESULT] Tool {tc['name']} completed: {tc['result'][:100]}...")
+                                        # 流式回传工具调用结果（分类为 tool）
+                                        if stream_callback is not None:
+                                            try:
+                                                await stream_callback(
+                                                    {
+                                                        "type": "tool_call",
+                                                        "chunk_type": "tool",
+                                                        "phase": "result",
+                                                        "tool_call": tc,
+                                                    }
+                                                )
+                                            except Exception as cb_err:
+                                                logger.warning(f"[STREAM_CALLBACK] Error sending tool call result: {cb_err}")
                                         break
                     
                     # 从 ToolCallSummaryMessage 中提取工具调用信息（备用方案）
@@ -299,6 +383,19 @@ class MultiAgentService:
                                         "status": "pending"
                                     }
                                     result["tool_calls"].append(tool_call)
+                                    # 流式回传工具调用摘要（当作 request 处理，分类为 tool）
+                                    if stream_callback is not None:
+                                        try:
+                                            await stream_callback(
+                                                {
+                                                    "type": "tool_call",
+                                                    "chunk_type": "tool",
+                                                    "phase": "request",
+                                                    "tool_call": tool_call,
+                                                }
+                                            )
+                                        except Exception as cb_err:
+                                            logger.warning(f"[STREAM_CALLBACK] Error sending tool call summary request: {cb_err}")
                         
                         if hasattr(message, 'results') and message.results:
                             for exec_result in message.results:
@@ -308,17 +405,43 @@ class MultiAgentService:
                                         tc["result"] = getattr(exec_result, 'content', '')
                                         tc["is_error"] = getattr(exec_result, 'is_error', False)
                                         tc["status"] = "error" if tc["is_error"] else "completed"
+                                        # 流式回传工具调用结果摘要（分类为 tool）
+                                        if stream_callback is not None:
+                                            try:
+                                                await stream_callback(
+                                                    {
+                                                        "type": "tool_call",
+                                                        "chunk_type": "tool",
+                                                        "phase": "result",
+                                                        "tool_call": tc,
+                                                    }
+                                                )
+                                            except Exception as cb_err:
+                                                logger.warning(f"[STREAM_CALLBACK] Error sending tool call summary result: {cb_err}")
                                         break
                         
                         logger.info(f"[TOOL_SUMMARY] Extracted from ToolCallSummaryMessage: {len(result['tool_calls'])} tool calls")
                     
                     # 检查是否有 thought 属性（某些版本的 autogen 可能会添加）
                     if hasattr(message, 'thought') and message.thought:
-                        result["thoughts"].append({
+                        thought_item = {
                             "content": message.thought,
                             "source": getattr(message, 'source', 'assistant')
-                        })
+                        }
+                        result["thoughts"].append(thought_item)
                         logger.info(f"[THOUGHT] Captured from message.thought: {message.thought[:100]}...")
+                        # 流式回传思考过程（message.thought 字段，分类为 llm）
+                        if stream_callback is not None:
+                            try:
+                                await stream_callback(
+                                    {
+                                        "type": "thought",
+                                        "chunk_type": "llm",
+                                        "thought": thought_item,
+                                    }
+                                )
+                            except Exception as cb_err:
+                                logger.warning(f"[STREAM_CALLBACK] Error sending thought(thought field) event: {cb_err}")
             except Exception as stream_error:
                 logger.error(f"[STREAM] Error in agent.run_stream: {str(stream_error)}", exc_info=True)
                 raise
@@ -326,12 +449,11 @@ class MultiAgentService:
             logger.info(f"[STREAM] Stream completed, received {len(messages)} messages")
             logger.info(f"[STREAM] Collected {len(result['thoughts'])} thoughts, {len(result['tool_calls'])} tool calls")
             
-            # 提取 assistant 的回复内容
+            # 结束节点一定是大模型的回复（对 tool 的总结），不是工具调用。从 stream 中提取该最终模型回复作为 content。
             response_text = ""
             
             if messages:
-                # 从后往前查找 assistant 的 TextMessage
-                # 通常最后一条是 TaskResult，倒数第二条是 assistant 的回复
+                # 从后往前查找 assistant 的 TextMessage（即模型在 tool 执行后的总结回复）
                 assistant_message = None
                 
                 # 方法1：查找 source='assistant' 的 TextMessage
@@ -373,6 +495,19 @@ class MultiAgentService:
                                     logger.debug(f"[EXTRACT] Found assistant message in TaskResult.messages, type={msg_type}")
                                     break
                 
+                # 方法4：最后一条非 TaskResult 的 TextMessage/ToolCallSummaryMessage（兼容 agent 名或 reflect 形态）
+                if assistant_message is None:
+                    for msg in reversed(messages):
+                        msg_type = type(msg).__name__
+                        if msg_type == 'TaskResult':
+                            continue
+                        if msg_type in ['TextMessage', 'ToolCallSummaryMessage'] and hasattr(msg, 'content'):
+                            content = msg.content
+                            if content and (isinstance(content, str) and content.strip()):
+                                assistant_message = msg
+                                logger.debug(f"[EXTRACT] Found last non-TaskResult message (method 4), type={msg_type}, source={getattr(msg, 'source', 'N/A')}")
+                                break
+                
                 # 提取内容
                 if assistant_message is not None:
                     if hasattr(assistant_message, 'content'):
@@ -400,13 +535,70 @@ class MultiAgentService:
                         response_text = str(last_message)
                 
                 if not response_text or len(response_text.strip()) == 0:
-                    logger.error(f"[EXTRACT] Empty response extracted!")
+                    logger.warning(f"[EXTRACT] No assistant text found in stream (messages: {len(messages)})")
                     msg_info = [f"{type(m).__name__}(source={getattr(m, 'source', 'N/A')})" for m in messages]
-                    logger.error(f"[EXTRACT] All messages: {msg_info}")
-                    response_text = "I apologize, but I couldn't generate a response."
-                
+                    logger.debug(f"[EXTRACT] All messages: {msg_info}")
+                    # 按理结束节点应为模型总结；未提取到时为降级：用工具返回的 message 拼一段摘要
+                    success_tools = [tc for tc in result.get("tool_calls", []) if tc.get("status") == "completed"]
+                    if success_tools:
+                        parts = []
+                        for tc in success_tools:
+                            name = tc.get("name") or "tool"
+                            try:
+                                raw = tc.get("result") or ""
+                                parsed = json.loads(raw) if isinstance(raw, str) else raw
+                                if isinstance(parsed, dict) and parsed.get("success") and parsed.get("message"):
+                                    parts.append(parsed.get("message"))
+                                elif name == "create_schedule":
+                                    parts.append("已创建日程。")
+                                else:
+                                    parts.append(f"已执行 {name}。")
+                            except Exception:
+                                parts.append(f"已执行 {name}。")
+                        response_text = " ".join(parts) if parts else "操作已完成。"
+                    else:
+                        response_text = "I apologize, but I couldn't generate a response."
+
+                # 通用规则：如果某些工具的返回中包含结构化的 markdown（如澄清问题），
+                # 则将这些 markdown 追加到最终回答后面，避免只出现一句「请选择一个选项」而看不到完整内容。
+                # 注意：askUserQuestion 的提问内容通常已由模型在回复中写出，不再追加以免重复显示两遍。
+                try:
+                    extra_markdowns = []
+                    _skip_markdown_tools = ("askUserQuestion", "ask_user_question")
+                    for tc in result.get("tool_calls", []):
+                        if tc.get("status") != "completed":
+                            continue
+                        if (tc.get("name") or "").strip() in _skip_markdown_tools:
+                            continue
+                        raw_result = tc.get("result")
+                        if not raw_result:
+                            continue
+                        try:
+                            parsed = json.loads(raw_result) if isinstance(raw_result, str) else raw_result
+                        except Exception:
+                            continue
+                        if not isinstance(parsed, dict) or not parsed.get("success"):
+                            continue
+                        data = parsed.get("data") or parsed
+                        markdown = None
+                        if isinstance(data, dict):
+                            # 约定：工具若希望其 markdown 直接展示给用户，可放在 data["markdown"]
+                            markdown = data.get("markdown")
+                        if isinstance(markdown, str) and markdown.strip():
+                            extra_markdowns.append(markdown.strip())
+
+                    if extra_markdowns:
+                        # 将这些 markdown 附加到模型回答后面（通用，不限定具体工具名）
+                        extra_block = "\n\n".join(extra_markdowns)
+                        if response_text:
+                            response_text = response_text.rstrip() + "\n\n" + extra_block
+                        else:
+                            response_text = extra_block
+                except Exception as e:
+                    logger.warning(f"[POSTPROCESS] Failed to inject tool markdown into answer: {e}")
+
                 result["content"] = response_text
-                
+
                 # 保存到历史记录
                 history.append({
                     "role": "user",

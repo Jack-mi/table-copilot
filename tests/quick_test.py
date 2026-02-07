@@ -40,15 +40,21 @@ async def test_websocket():
             status_data = json.loads(status)
             print(f"⏳ 状态: {status_data.get('message', '')}")
             
-            # 接收响应
-            result = await websocket.recv()
-            result_data = json.loads(result)
+            # 持续接收，直到拿到最终的 response 消息
+            final_response = None
+            while True:
+                raw = await websocket.recv()
+                data = json.loads(raw)
+                msg_type = data.get("type")
+                if msg_type == "response":
+                    final_response = data
+                    break
+                # 对于流式事件（thought/tool_call 等），仅打印调试信息
+                print(f"📡 流式事件: {msg_type} -> {raw}")
             
-            if result_data.get('type') == 'response':
+            if final_response:
                 print(f"\n✅ 响应成功!")
-                print(f"💬 内容: {result_data.get('content', '')}")
-            else:
-                print(f"\n❌ 响应: {result}")
+                print(f"💬 内容: {final_response.get('content', '')}")
                 
     except ConnectionRefusedError:
         print("❌ 连接失败: 服务器未启动，请先运行 python3 websocket_server.py")

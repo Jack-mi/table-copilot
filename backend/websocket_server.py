@@ -128,13 +128,28 @@ class WebSocketAgentServer:
                             "message": "Processing your message..."
                         })
                         
-                        # 处理消息并获取响应
+                        # 处理消息并获取响应（同时通过回调流式推送中间事件）
                         try:
                             import time
+
+                            async def stream_callback(event: Dict):
+                                """
+                                将中间事件以 WebSocket 消息形式实时推送给前端。
+                                不改变最终 response 的结构，仅增加新的消息类型：
+                                - type = "thought"
+                                - type = "tool_call"
+                                """
+                                event_with_session = dict(event)
+                                event_with_session["session_id"] = session_id
+                                try:
+                                    await self.send_message(websocket, event_with_session)
+                                except Exception as send_err:
+                                    logger.warning(f"[STREAM] Failed to send stream event: {send_err}")
+
                             start_time = time.time()
                             logger.info(f"[AGENT] Calling agent_service.process_message for session {session_id}")
                             response_data = await self.agent_service.process_message(
-                                session_id, user_message
+                                session_id, user_message, stream_callback=stream_callback
                             )
                             elapsed_time = time.time() - start_time
                             
@@ -154,7 +169,23 @@ class WebSocketAgentServer:
                             })
                             continue
                         
-                        # 发送响应（包含思考过程和工具调用）
+                        # 先流式发送正文内容（按小块拆分），每发一块稍作间隔以便前端逐 chunk 打印/重绘
+                        try:
+                            if response_content:
+                                chunk_size = 80  # 每个块的字符数，可按需调整
+                                for i in range(0, len(response_content), chunk_size):
+                                    chunk = response_content[i : i + chunk_size]
+                                    await self.send_message(websocket, {
+                                        "type": "response_stream",
+                                        "chunk_type": "llm",
+                                        "delta": chunk,
+                                        "session_id": session_id
+                                    })
+                                    await asyncio.sleep(0.06)  # 约 60ms，让前端每段都有时间重绘，避免一下子全出来
+                        except Exception as stream_err:
+                            logger.warning(f"[RESPONSE_STREAM] Failed to send streaming content: {stream_err}")
+                        
+                        # 发送最终响应（包含思考过程和工具调用的汇总）
                         logger.debug(f"[RESPONSE] Sending response to {client_id}")
                         await self.send_message(websocket, {
                             "type": "response",

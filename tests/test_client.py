@@ -45,11 +45,20 @@ async def test_websocket_client():
                 status_response = await websocket.recv()
                 logger.info(f"Status: {status_response}")
                 
-                # 接收响应消息
-                response = await websocket.recv()
-                response_data = json.loads(response)
-                logger.info(f"Response type: {response_data.get('type')}")
-                logger.info(f"Response content: {response_data.get('content', '')[:200]}")
+                # 持续接收，直到拿到最终的 response 消息
+                final_response = None
+                while True:
+                    raw = await websocket.recv()
+                    data = json.loads(raw)
+                    msg_type = data.get("type")
+                    if msg_type == "response":
+                        final_response = data
+                        break
+                    logger.info(f"Stream event: {raw}")
+                
+                if final_response:
+                    logger.info(f"Response type: {final_response.get('type')}")
+                    logger.info(f"Response content: {final_response.get('content', '')[:200]}")
             
             # 测试清除历史
             logger.info("\n--- Clearing History ---")

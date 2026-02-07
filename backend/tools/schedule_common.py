@@ -12,14 +12,17 @@ SCHEDULE_FILE = os.path.join(os.path.dirname(__file__), "..", "schedules.json")
 
 
 def load_schedules() -> List[Dict[str, Any]]:
-    """加载已保存的日程列表。"""
-    if os.path.exists(SCHEDULE_FILE):
-        try:
-            with open(SCHEDULE_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except (json.JSONDecodeError, IOError):
-            return []
-    return []
+    """加载已保存的日程列表。若文件非 UTF-8 或 JSON 损坏，则降级返回空列表。"""
+    if not os.path.exists(SCHEDULE_FILE):
+        return []
+    try:
+        with open(SCHEDULE_FILE, "r", encoding="utf-8", errors="replace") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, IOError, UnicodeDecodeError) as e:
+        return []
+    if not isinstance(data, list):
+        return []
+    return data
 
 
 def save_schedules(schedules: List[Dict[str, Any]]) -> None:
@@ -41,6 +44,7 @@ def make_schedule_result(
     data: Optional[Any] = None,
     message: Optional[str] = None,
     error: Optional[str] = None,
+    extra: Optional[Dict[str, Any]] = None,
 ) -> str:
     """
     统一的 JSON 返回格式：
@@ -49,7 +53,8 @@ def make_schedule_result(
       "success": true/false,
       "message": "<可选的人类可读描述>",
       "data": { ... 任意结构化数据 ... },
-      "error": "<错误信息，仅在 success=false 时出现>"
+      "error": "<错误信息，仅在 success=false 时出现>",
+      "frontend_prompt": "<可选，前端展示的提示/ toast 文案>"
     }
     """
     payload: Dict[str, Any] = {"tool": tool, "success": success}
@@ -59,6 +64,8 @@ def make_schedule_result(
         payload["data"] = data
     if error:
         payload["error"] = error
+    if extra:
+        payload.update(extra)
     return json.dumps(payload, ensure_ascii=False)
 
 

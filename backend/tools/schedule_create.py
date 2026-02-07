@@ -84,9 +84,11 @@ def create_schedule(
         schedules.append(schedule)
         save_schedules(schedules)
 
-        # 尝试同步到系统日历（比如 macOS Calendar），失败不影响主流程
+        # 同步到系统日历（macOS 用 .ics 打开，Windows 等可扩展）
+        calendar_synced = False
         try:
             sync_schedule_to_system_calendar(schedule)
+            calendar_synced = True
         except Exception as e:
             logger.warning(
                 "[CAL] Failed to sync schedule %s to system calendar: %s",
@@ -94,11 +96,14 @@ def create_schedule(
                 e,
             )
 
+        # 前端提示：成功创建 + 是否已加入系统日历，供前端做 toast 等展示
+        frontend_prompt = "已加入系统日历，到点会提醒你～" if calendar_synced else "日程已创建，到点会提醒你～"
         return make_schedule_result(
             "create_schedule",
             True,
             data={"schedule": schedule},
             message="日程创建成功",
+            extra={"frontend_prompt": frontend_prompt},
         )
 
     except ValueError as e:
