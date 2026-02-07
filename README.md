@@ -1,114 +1,53 @@
 # AutoGen Multi-Agent WebSocket Service
 
-基于 [AutoGen](https://github.com/microsoft/autogen) 框架实现的 WebSocket 多 Agent 服务，支持多轮对话和工具调用。
+基于 [AutoGen](https://github.com/microsoft/autogen) 的 WebSocket 多 Agent 服务，支持多轮对话、工具调用（日程/澄清提问）与流式回复。
 
-## 项目简介
+## 功能概览
 
-本项目实现了一个基于 AutoGen 框架的多 Agent WebSocket 服务，通过 OpenRouter API 使用 `moonshotai/kimi-k2.5` 模型。服务支持：
+- 实时 WebSocket 通信与流式回复展示
+- 多轮对话与会话历史（按 session 隔离）
+- 日程工具：创建/列表/更新/删除日程；日程提醒服务
+- 澄清提问工具：向用户发起单选/多选等
+- 前端仅展示最终回复（思考过程与工具调用不在界面展示，仅控制台可查）
 
-- ✅ 实时 WebSocket 通信
-- ✅ 多轮对话上下文管理
-- ✅ Markdown 格式回复渲染
-- ✅ 代码语法高亮
-- ✅ 会话历史管理
-- ✅ 工具调用框架（已预留接口）
+## 启动方式
 
-## 实现摘要
+### 环境要求
 
-### 核心组件
+- Python 3.12+（推荐）
+- 配置 OpenRouter API Key：在项目根目录创建 `.env`，或 `export OPENROUTER_API_KEY=sk-or-...`
 
-1. **agent_service.py**: AutoGen 多 Agent 服务核心
-   - 集成 OpenRouter API（使用 kimi-k2.5 模型）
-   - 管理会话 Agent 实例和对话历史
-   - 处理消息流并提取 assistant 回复
-
-2. **websocket_server.py**: WebSocket 服务器
-   - 处理客户端连接和消息路由
-   - 支持多客户端并发
-   - 错误处理和日志记录
-
-3. **client.html**: 前端聊天界面
-   - 实时 WebSocket 通信
-   - Markdown 渲染（marked.js）
-   - 代码高亮（highlight.js）
-   - 自动重连机制
-
-### 技术栈
-
-- **后端**: Python 3.12+, AutoGen, WebSockets, OpenRouter API
-- **前端**: HTML5, JavaScript, Marked.js, Highlight.js
-- **模型**: moonshotai/kimi-k2.5 (通过 OpenRouter)
-
-## 快速开始
-
-### 1. 一键快速部署（推荐）
+### 一键启动后端（推荐）
 
 ```bash
 cd table-copilot
-
-# 第一次运行或环境变化时执行（会自动创建 venv 并安装依赖）
 chmod +x scripts/quick_start_server.sh
 scripts/quick_start_server.sh
 ```
 
-> 提示：脚本默认使用 `python3.12` 创建虚拟环境，如需自定义，可设置环境变量 `PYTHON_BIN`，例如：
-> `PYTHON_BIN=python3.12 ./quick_start_server.sh`
+脚本会：创建/复用 `venv`、安装依赖、启动 **WebSocket 服务**（`ws://localhost:8765`）和 **日程通知服务**。  
+自定义 Python 可设置：`PYTHON_BIN=python3.12 scripts/quick_start_server.sh`。
 
-### 2. 手动安装依赖（可选）
-
-```bash
-# 创建虚拟环境
-python3 -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
-
-# 安装依赖
-pip install -r requirements.txt
-```
-
-### 3. 配置环境变量（必选）
-
-服务统一通过 OpenRouter 请求模型，不再直接调用 OpenAI 接口。需设置：
+### 启动前端（另开终端）
 
 ```bash
-export OPENROUTER_API_KEY=your_openrouter_key   # 以 sk-or- 开头
-export MODEL_NAME=moonshotai/kimi-k2.5          # 可选，默认 Kimi
-export OPENROUTER_BASE_URL=https://openrouter.ai/api/v1  # 可选
-```
-
-> 也可以在项目根目录创建 `.env` 文件，内容示例：
->
-> ```bash
-> OPENROUTER_API_KEY=your_openrouter_key
-> MODEL_NAME=moonshotai/kimi-k2.5
-> ```
-
-
-### 4. 启动服务
-
-#### 方式一：使用启动脚本（推荐，配合一键脚本）
-
-```bash
-# 启动 WebSocket 服务器
-scripts/start_all.sh
-
-# 启动前端客户端服务器（新终端）
 scripts/start_client.sh
 ```
 
-#### 方式二：手动启动
+按提示在浏览器打开 `http://localhost:<端口>/client.html`（默认从 3000 起找可用端口）。
+
+### 仅手动启动
 
 ```bash
-# 启动 WebSocket 服务器
+# 后端
 source venv/bin/activate
-python3 -m backend.websocket_server
+pip install -r requirements.txt   # 首次
+scripts/start_all.sh               # 或: python3 -m backend.websocket_server（仅 WebSocket）
 
-# 启动前端服务器（新终端）
-python3 -m http.server 3000
+# 前端（新终端）
+cd frontend && python3 -m http.server 3000
+# 访问 http://localhost:3000/client.html
 ```
-
-### 4. 访问前端
-
-浏览器打开：`http://localhost:3000/client.html`（或启动脚本显示的端口）
 
 ## 测试流程
 
@@ -157,26 +96,29 @@ table-copilot/
 │   └── tools/                # 可调用工具集合
 │       ├── __init__.py
 │       ├── schedule_reminder.py
-│       ├── todo_manager.py
+│       ├── schedule_common.py
+│       ├── schedule_create.py
+│       ├── schedule_list.py
+│       ├── schedule_update.py
+│       ├── schedule_delete.py
 │       └── ask_user_question.py
 ├── frontend/                 # 前端界面
 │   ├── client.html           # Web 聊天界面
 │   └── README_CLIENT.md      # 前端使用说明
 ├── scripts/                  # 启动与运维脚本
-│   ├── start_all.sh          # 启动后端（含端口清理与日志）
-│   ├── start_server.sh       # 仅启动后端 WebSocket 服务器
-│   ├── start_client.sh       # 启动静态前端 HTTP 服务
-│   ├── quick_start_server.sh # 一键创建 venv + 安装依赖 + 启动后端
-│   ├── check_server_status.sh# 检查端口与连接状态
-│   └── test_curl.sh          # 命令行 WebSocket 测试入口说明
-├── tests/                    # 测试脚本
-│   ├── quick_test.py         # 快速单轮对话测试
-│   └── test_client.py        # 多轮对话与清理测试客户端
-├── docs/                     # 文档与说明
+│   ├── start_all.sh          # 启动后端 WebSocket + 日程通知
+│   ├── start_server.sh       # 仅启动 WebSocket
+│   ├── start_client.sh       # 启动前端静态服务（frontend/）
+│   ├── quick_start_server.sh # 一键 venv + 依赖 + 启动后端
+│   ├── check_server_status.sh# 检查端口与进程
+│   └── test_curl.sh          # WebSocket 测试说明
+├── tests/
+│   ├── quick_test.py
+│   └── test_client.py
+├── docs/
 │   ├── CURL_TEST.md
 │   ├── LOG_LEVELS.md
-│   ├── STATUS.md
-│   └── TODO_IMPLEMENTATION_PLAN.md
+│   └── STATUS.md
 ├── requirements.txt          # Python 依赖
 └── README.md                 # 项目说明（本文件）
 ```
